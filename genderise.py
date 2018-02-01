@@ -20,20 +20,32 @@ def genderise(name):
     paras = soup.find_all('p')
     paras_text = ' '.join([p.get_text() for p in paras])
 
-    splits = [w for w in paras_text.split(' ') if w in ['she', 'he']]
-    counter = Counter(splits)
-    result = None
-    if counter['she'] > counter['he']:
-        result = 'female'
-    elif counter['he'] > counter['she']:
-        result = 'male'
+    corpus = paras_text.split(' ')
 
-    if result:
-        print "{} is probably {}".format(name, result)
-    else:
-        print dict(counter)
+    for ix, word in enumerate(corpus):
+        if word.lower() in [
+            'his', 'her', 'their', 'he', 'she', 'they', 'them', 'him'
+        ]:
+            first_pronoun = word
+            context = " ".join(corpus[ix - 5:ix + 5])
+            break
 
-
+    result = {
+        'their': 'non-binary',
+        'they': 'non-binary',
+        'them': 'non-binary',
+        'her': 'female',
+        'she': 'female',
+        'his': 'male',
+        'him': 'male',
+        'he': 'male',
+    }[first_pronoun]
+    print (
+        "{} probably identifies as {} based on first pronoun in context "
+        "being \"{}\"".format(
+            name, result, context
+        )
+    )
 
 
 if __name__ == '__main__':
