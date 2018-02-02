@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 import click
 import requests
 
-CONN = sqlite3.connect('gendify.db')
+CONN = sqlite3.connect('.genderify.db')
 DID_CHECK = False
 PRONOUN_MAP = {
     'their': 'non-binary',
@@ -65,12 +65,19 @@ def get_db():
     return curs
 
 
+def _set_offset(offset):
+    """Set the offset."""
+    curs = get_db()
+    curs.execute("INSERT INTO meta(offset) VALUES (?)", (offset,))
+    CONN.commit()
+
+
 def _get_offset():
     """Get the last offset."""
     curs = get_db()
     curs.execute("SELECT offset FROM meta ORDER BY timestamp DESC LIMIT 1")
-    offset = curs.fetchone() or 0
-    return offset
+    offset = curs.fetchone()
+    return offset[0] if offset else 0
 
 
 def _store_artists(artist_tuples):
@@ -85,9 +92,9 @@ def _store_artists(artist_tuples):
             artist_tuples
         )
         CONN.commit()
-    except sqlite3.ProgrammingError:
-        import ipdb; ipdb.set_trace()
-        print "error."
+        return True
+    except sqlite3.ProgrammingError as err:
+        click.secho(err, fg='red')
 
 
 def _checked_result(url):
@@ -146,12 +153,12 @@ def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
         if member_result:
             member_results.extend(member_result)
             if do_store:
-                results.append(member_result)
+                results.extend(member_result)
 
     member_genders = [g[3] for g in member_results]
     genders = list(set(member_genders))
     if len(genders) == 1:
-        gender = genders[0]
+        gender = 'all-{}'.format(genders[0])
     elif len(genders):  # non-trinary!
         counter = Counter(member_genders)
         led = '{}-led'.format(member_genders[0])
@@ -173,19 +180,16 @@ def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
     return results
 
 
-def genderise(name, uri=None, spotify_id=None, inset=0):
-    """Get the gender of the artist name."""
-    if uri is not None:
-        url = u"https://en.wikipedia.org{}".format(uri)
-    else:
-        url = u"https://en.wikipedia.org/wiki/{}".format(
-            name.title().replace(' ', '_')
-        )
-
-    results = []
+def _get_artist_page(name, uri=None):
+    """Try to get the artist page, few options to check..."""
+    # TODO: Only tries first thing, should try others.
+    url = u"https://en.wikipedia.org{}".format(
+        uri if uri else u'/wiki/{}'.format(name.title().replace(' ', '_'))
+    )
+    scrape_it = False
     result = _checked_result(url)
     if result:
-        return False, [result]
+        return scrape_it, None, None, url, [result]
 
     click.echo(url)
     req = requests.get(url)
@@ -194,12 +198,32 @@ def genderise(name, uri=None, spotify_id=None, inset=0):
     info_rows = soup.select('table.infobox tr th[scope="row"]')
     info_rows_texts = [th.text for th in info_rows]
     try:
-        info_rows_texts.index('Labels')
+        info_rows_texts.index('Genres')
+        scrape_it = True
     except ValueError:
-        click.secho(
-            "The URL scanned probably isn't a musician page, as there are no "
-            "record labels... URL was {}".format(url), fg='red'
-        )
+        try:
+            info_rows_texts.index('Labels')
+            scrape_it = True
+        except ValueError:
+            click.secho(
+                "The URL scanned probably isn't a musician page, as there are"
+                " no genres or record labels... URL was {}".format(url),
+                fg='red'
+            )
+        scrape_it = False
+    return scrape_it, soup, info_rows, url, None
+
+
+def genderise(name, uri=None, spotify_id=None, inset=0):
+    """Get the gender of the artist name."""
+    results = []
+
+    scrape_it, soup, info_rows, url, maybe_results = _get_artist_page(
+        name, uri
+    )
+    if url and not scrape_it:
+        return False, maybe_results
+    elif not scrape_it:
         return False, []
 
     is_group = False
@@ -224,6 +248,47 @@ def genderise(name, uri=None, spotify_id=None, inset=0):
     return True, results
 
 
+def _from_spotify(token, offset, batch_limit, forever):
+    """Get results from spotify."""
+    if offset is None:
+        offset = _get_offset()
+
+    click.secho("Starting at offset = {}".format(offset), fg='blue')
+    url = "https://api.spotify.com/v1/search"
+    query = {
+        'q': 'year:0000-9999',
+        'type': 'artist',
+        'limit': min([50, batch_limit]),
+        'offset': offset,
+    }
+    headers = {
+        'Authorization': "Bearer {}".format(token),
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+    req = requests.get(url, params=query, headers=headers)
+    resp = req.json()
+    try:
+        artists_json = resp['artists']['items']
+        artists_tuples = []
+        for artist in artists_json:
+            name = artist['name']
+            id_ = artist['id']
+            do_store, artist_results = genderise(name, spotify_id=id_)
+            if do_store:
+                artists_tuples.extend(artist_results)
+
+        if _store_artists(artists_tuples):
+            offset = resp['artists']['limit'] + resp['artists']['offset']
+            _set_offset(offset)
+            if forever:
+                _from_spotify(token, offset, batch_limit, forever)
+    except KeyError:
+        click.secho("Response was weird: {}".format(resp), fg='red')
+    except KeyboardInterrupt:
+        click.secho("You stopped it!", fg='blue')
+
+
 @click.command()
 @click.option(
     '--token', prompt="Enter OAuth token", help="Spotify OAuth token."
@@ -232,41 +297,25 @@ def genderise(name, uri=None, spotify_id=None, inset=0):
     '--name', help="Optionally limit to lookup this name.", default=None
 )
 @click.option(
-    '--offset', help="Offset for fetching artist search results"
+    '--offset', help="Offset for fetching artist search results", default=None,
+    type=int
 )
-def gendify(token, name, offset=0):
+@click.option(
+    '--batch-limit', help="How many to fetch at once", default=50,
+    type=int
+)
+@click.option(
+    '--forever/--once', help="Keep going until killed, or just once.",
+    default=False
+)
+def gendify(token, name, offset, batch_limit, forever):
     """Get all the artist names."""
     if name:
         do_store, results = genderise(name)
         if do_store:
             _store_artists(results)
     else:
-        url = "https://api.spotify.com/v1/search"
-        query = {
-            'q': 'year:0000-9999',
-            'type': 'artist',
-            'limit': 50,
-            'offset': offset
-        }
-        headers = {
-            'Authorization': "Bearer {}".format(token),
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        }
-        req = requests.get(url, params=query, headers=headers)
-        resp = req.json()
-        try:
-            artists_json = resp['artists']['items']
-            artists_tuples = []
-            for artist in artists_json:
-                name = artist['name']
-                id_ = artist['id']
-                do_store, artist_results = genderise(name, spotify_id=id_)
-                if do_store:
-                    artists_tuples.extend(artist_results)
-            _store_artists(artists_tuples)
-        except KeyError:
-            click.secho("Response was weird: {}".fomrat(resp), fg='red')
+        _from_spotify(token, offset, batch_limit, forever)
 
 
 if __name__ == '__main__':
