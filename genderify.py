@@ -197,20 +197,13 @@ def _get_artist_page(name, uri=None):
     soup = BeautifulSoup(text, "html.parser")
     info_rows = soup.select('table.infobox tr th[scope="row"]')
     info_rows_texts = [th.text for th in info_rows]
-    try:
-        info_rows_texts.index('Genres')
-        scrape_it = True
-    except ValueError:
-        try:
-            info_rows_texts.index('Labels')
-            scrape_it = True
-        except ValueError:
-            click.secho(
-                "The URL scanned probably isn't a musician page, as there are"
-                " no genres or record labels... URL was {}".format(url),
-                fg='red'
-            )
-        scrape_it = False
+    scrape_it = set(['Genres', 'Labels', 'Instruments']) & set(info_rows_texts)
+    if not scrape_it:
+        click.secho(
+            "The URL scanned probably isn't a musician page, as there are"
+            " no genres or record labels... URL was {}".format(url),
+            fg='red'
+        )
     return scrape_it, soup, info_rows, url, None
 
 
