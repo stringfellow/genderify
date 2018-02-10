@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import click
 import requests
 
+LAST_FM_API_KEY = "FILLMEIIIIN"
 CONN = sqlite3.connect('.genderify.db')
 DID_CHECK = False
 PRONOUN_MAP = {
@@ -109,22 +110,18 @@ def _checked_result(url):
         return result[1:]
 
 
-def _gender_person(soup, name, url):
-    """Parse wikipedia for single artist."""
-    paras = soup.find_all('p')
-    paras_text = ' '.join([p.get_text() for p in paras])
-
-    corpus = paras_text.split(' ')
-
+def _gender_person(corpus, name):
+    """Parse corpus for single artist."""
     first_pronoun = None
-    for ix, word in enumerate(corpus):
+    words = corpus.split(' ')
+    for ix, word in enumerate(words):
         word = word.lower()
         word = re.sub(r'[^\w]', '', word)
         if word in [
             'his', 'her', 'their', 'he', 'she', 'they', 'them', 'him'
         ]:
             first_pronoun = word
-            context = " ".join(corpus[ix - 5:ix + 5])
+            context = " ".join(words[ix - 5:ix + 5])
             break
     gender = PRONOUN_MAP.get(first_pronoun, False)
     if gender:
@@ -137,7 +134,7 @@ def _gender_person(soup, name, url):
     return gender
 
 
-def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
+def _gender_group(info_rows, name, url, spotify_id=None):
     """Gender a group -- if ValueError raised, then not a group."""
     results = []
     info_rows_texts = [th.text for th in info_rows]
@@ -149,7 +146,7 @@ def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
     ]
     member_results = []
     for member in members:
-        do_store, member_result = genderise(*member, inset=inset + 1)
+        do_store, member_result = genderise(*member)
         if member_result:
             member_results.extend(member_result)
             if do_store:
@@ -172,7 +169,7 @@ def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
 
     if gender:
         click.secho(
-            "{}{} is a group and is {}".format(' ' * inset, name, gender),
+            "{} is a group and is {}".format(name, gender),
             fg='green'
         )
 
@@ -180,7 +177,26 @@ def _gender_group(info_rows, name, url, spotify_id=None, inset=0):
     return results
 
 
-def _get_artist_page(name, uri=None):
+def _get_gender_from_last_fm(name):
+    """Lookup the artist on Last.fm and get bio from there."""
+    url = u"http://ws.audioscrobbler.com/2.0/"
+    query = {
+        'method': 'artist.getinfo',
+        'artist': name,
+        'api_key': LAST_FM_API_KEY,
+        'format': 'json'
+    }
+    req = requests.get(url, params=query)
+    result_json = req.json()
+    if result_json.get('error'):
+        click.secho(result_json['message'], fg='red')
+        return None
+    corpus = result_json['artist']['bio']['content']
+    gender = _gender_person(corpus, name)
+    return bool(gender), gender
+
+
+def _get_wikipedia_artist_page(name, uri=None):
     """Try to get the artist page, few options to check..."""
     # TODO: Only tries first thing, should try others.
     url = u"https://en.wikipedia.org{}".format(
@@ -207,11 +223,9 @@ def _get_artist_page(name, uri=None):
     return scrape_it, soup, info_rows, url, None
 
 
-def genderise(name, uri=None, spotify_id=None, inset=0):
-    """Get the gender of the artist name."""
-    results = []
-
-    scrape_it, soup, info_rows, url, maybe_results = _get_artist_page(
+def _get_genders_from_wikipedia(name, uri, spotify_id):
+    """Try and get the gender from wikipedia."""
+    scrape_it, soup, info_rows, url, maybe_results = _get_wikipedia_artist_page(
         name, uri
     )
     if url and not scrape_it:
@@ -221,22 +235,35 @@ def genderise(name, uri=None, spotify_id=None, inset=0):
 
     is_group = False
     try:
-        group_results = _gender_group(
-            info_rows, name, url, spotify_id=spotify_id, inset=inset
+        genders = _gender_group(
+            info_rows, name, url, spotify_id=spotify_id
         )
-        results.extend(group_results)
         is_group = True
-        gender = len(results) > 0
     except ValueError:
-        gender = _gender_person(soup, name, url)
-        if gender:
-            results.append((spotify_id, url, name, gender, is_group))
+        # try from wikipedia
+        paras = soup.find_all('p')
+        paras_text = ' '.join([p.get_text() for p in paras])
+        genders = [_gender_person(paras_text, name)]
+    return bool(len(genders)), genders
 
-    if not gender:
+
+def genderise(name, uri=None, spotify_id=None):
+    """Get the gender of the artist name."""
+    results = []
+
+    url = None
+    is_group = False
+    genders = []
+    success, gender = _get_genders_from_wikipedia(name, uri, spotify_id)
+    if not success:
+        success, gender = _get_gender_from_last_fm(name)
+
+    if success:
+        click.secho("DEBUG: {}".format(genders), fg='blue')
+        results.append((spotify_id, url, name, gender, is_group))
+    else:
         click.secho(
-            u"Couldn't find gender for {}, check the URL: {}".format(
-                name, url
-            ), fg='red'
+            u"Couldn't find gender for {}".format(name), fg='red'
         )
     return True, results
 
