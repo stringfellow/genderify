@@ -206,7 +206,11 @@ class Genderifier(object):
 
     def _wiki_is_disambiguation(self, artist, soup):
         """Return True if this a disambiguation page."""
-        if u"{} may refer to:".format(artist.name) in soup.text:
+        name = artist.name.lower()
+        text = soup.text.lower()
+        if u"{} may refer to:".format(name) in text:
+            return True
+        if u"{} can refer to:".format(name) in text:
             return True
         return False
 
@@ -242,8 +246,8 @@ class Genderifier(object):
             return soup
 
         self.log(
-            "The URL scanned probably isn't a musician page... URL was {}"
-            "".format(url),
+            u"The URL scanned probably isn't a musician page... URL was {}"
+            u"".format(url),
             fg='red'
         )
 
@@ -308,7 +312,7 @@ class Genderifier(object):
             gender = self.genderise(artist)
             names.append(artist.name)
             genders.append(gender)
-            if ix == 1:
+            if ix == 0:
                 lead = gender
         gender_counts = Counter(genders)
         members = MemberResults(
@@ -451,10 +455,10 @@ class Genderifier(object):
             try:
                 self.genderise(artist)
             except (KeyboardInterrupt, SystemExit):
-                self._set_offset(offset + ix)
+                ix -= 1  # set back one for 'finally' to keep us here next go
                 raise
             finally:
-                self._set_offset(offset + ix)
+                self._set_offset(offset + ix + 1)
 
     def genderise(self, artist):
         """Get the gender of the artist name."""
