@@ -34,7 +34,7 @@ class Genderifier(object):
     """Singleton to handle stateful traversing of gender lookups."""
 
     def __init__(self, spotify_token, lastfm_api_key=None, batch_limit=50,
-                 db_file_path=None):
+                 db_file_path=None, force_fetch=False):
         """Setup."""
         self._db_file_path = db_file_path or '.genderify.db'
         self._conn = None
@@ -44,6 +44,7 @@ class Genderifier(object):
         self._spotify_token = spotify_token
         self._batch_limit = batch_limit
         self._lastfm_api_key = lastfm_api_key
+        self._force_fetch = force_fetch
         if lastfm_api_key is None:
             self.log("Last.fm lookups disabled, no key given.", fg="red")
 
@@ -484,9 +485,25 @@ class Genderifier(object):
         if result:
             if result.gender is None and not result.is_group:
                 self.log(
-                    u"Found {} in database, but unknown gender...".format(name)
+                    u"Found {} in database, but unknown gender...".format(
+                        name
+                    ), fg="blue"
                 )
                 if not self._delete_artist(name):
+                    self.log(
+                        "Couldn't delete old record... skipping.", fg="red"
+                    )
+                    return
+            elif self._force_fetch:
+                self.log(
+                    u"Found {} in database, but forcing a re-fetch".format(
+                        name
+                    ), fg="blue"
+                )
+                if not self._delete_artist(name):
+                    self.log(
+                        "Couldn't delete old record... skipping.", fg="red"
+                    )
                     return
             else:
                 self.log(u"Found {} in database.".format(name))

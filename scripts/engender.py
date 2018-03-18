@@ -29,8 +29,12 @@ from genderify.gender_finder import Genderifier
     '--forever/--once', help="Keep going until killed, or just once.",
     default=False
 )
+@click.option(
+    '--force-fetch/--skip-found', help="Always re-try if already in database",
+    default=False,
+)
 def genderify(spotify_token, lastfm_key, name, offset, batch_limit,
-              db_file_path, forever):
+              db_file_path, forever, force_fetch):
     """Get all the artist names."""
 
     with Genderifier(
@@ -38,6 +42,7 @@ def genderify(spotify_token, lastfm_key, name, offset, batch_limit,
         lastfm_api_key=lastfm_key,
         batch_limit=batch_limit,
         db_file_path=db_file_path,
+        force_fetch=force_fetch,
     ) as genderifier:
         if name:
             genderifier.genderise(
