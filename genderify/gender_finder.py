@@ -206,19 +206,68 @@ class Genderifier(object):
 
         return is_artist
 
-    def _wiki_is_disambiguation(self, artist, soup):
+    def _wiki_is_disambiguation(self, soup):
         """Return True if this a disambiguation page."""
+        artist = self._current_artist_stack[-1]
         name = artist.name.lower()
         text = soup.text.lower()
         if u"{} may refer to:".format(name) in text:
             return True
+        if u"{} may also refer to:".format(name) in text:
+            return True
         if u"{} can refer to:".format(name) in text:
             return True
+        self.log("Not a disambiguation page either...")
         return False
 
     def _wiki_get_disambiguated_artist_soup(self, soup):
         """Get the actual soup from the disambiguation page."""
+        artist = self._current_artist_stack[-1]
+        links = [
+            link for link in soup.find_all('a')
+            if 'band' in link.text.lower()  # TODO: use regex \b for better
+        ]
+        if len(links) > 1:
+            self.log(
+                u"Too many choices!\n * {}".format(
+                    u"\n * ".join([
+                        link.text for link in links
+                    ])
+                ),
+                fg="red"
+            )
+        elif len(links) == 1:
+            url = u"https://en.wikipedia.org{}".format(links[0]['href'])
+            self.log(u"Trying Wikipedia URL {}...".format(url))
+            req = requests.get(url)
+            text = req.text
+            soup = BeautifulSoup(text, "html.parser")
+            if self._wiki_is_artist_page(soup):
+                self._current_artist_stack[-1] = Artist(
+                    artist.name, artist.spotify_id, url, artist.lastfm_url
+                )
+                return soup
         return None  # TODO FIXME
+
+    def _wiki_find_disambiguation(self, soup):
+        """Try and find the page that is the disambiguation."""
+        artist = self._current_artist_stack[-1]
+        if u"For other uses, see {}".format(artist.name) in soup.text:
+            # now find the link with (disambiguation) after it...?
+            links = [
+                link for link in soup.find_all('a')
+                if link.text == u"{} (disambiguation)".format(artist.name)
+            ]
+            if len(links):
+                url = u"https://en.wikipedia.org{}".format(links[0]['href'])
+                self.log(u"Trying Wikipedia URL {}...".format(url))
+                req = requests.get(url)
+                text = req.text
+                soup = BeautifulSoup(text, "html.parser")
+                if self._wiki_is_disambiguation(soup):
+                    soup = self._wiki_get_disambiguated_artist_soup(soup)
+                    return soup
+                self.log(u"Can't disambiguate at {}".format(url), fg="red")
 
     def _wiki_get_artist_soup(self):
         """Try to get the artist page, few options to check..."""
@@ -241,13 +290,22 @@ class Genderifier(object):
             self.log("Page redirects...", fg="red")
             continue_checks = False
 
-        if continue_checks and self._wiki_is_disambiguation(artist, soup):
+        if continue_checks and self._wiki_is_disambiguation(soup):
             soup = self._wiki_get_disambiguated_artist_soup(soup)
             if soup is None:
+                self.log(u"Can't disambiguate at {}".format(url), fg="red")
                 continue_checks = False
 
-        if continue_checks and self._wiki_is_artist_page(soup):
-            return soup
+        if continue_checks:
+            is_artist_page = self._wiki_is_artist_page(soup)
+            if is_artist_page:
+                return soup
+            else:  # try some tricks
+                old_soup = soup  # to restore state later...
+                soup = self._wiki_find_disambiguation(soup)
+                if soup is None:
+                    soup = old_soup
+                # well, fail here... what else can we try?
 
         # Failed all wiki tries
         self._current_artist_stack[-1] = artist  # reset
