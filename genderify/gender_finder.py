@@ -191,6 +191,7 @@ class Genderifier(object):
             return result
 
     def _wiki_get_info(self, soup):
+        """Get the 'infobox' rows from the RHS of wiki page."""
         info_rows = soup.select('table.infobox tr th[scope="row"]')
         return info_rows
 
@@ -214,14 +215,13 @@ class Genderifier(object):
             return True
         return False
 
-    def _wiki_get_disambiguated_artist_soup(self, artist, soup):
+    def _wiki_get_disambiguated_artist_soup(self, soup):
         """Get the actual soup from the disambiguation page."""
         return None  # TODO FIXME
 
-    def _wiki_get_artist_soup(self, artist):
-        """Try to get the artist page, few options to check...
-
-        """
+    def _wiki_get_artist_soup(self):
+        """Try to get the artist page, few options to check..."""
+        artist = self._current_artist_stack[-1]
         name = artist.name
         url = artist.wiki_url or u"https://en.wikipedia.org/wiki/{}".format(
             name.replace(' ', '_')
@@ -232,30 +232,36 @@ class Genderifier(object):
         soup = BeautifulSoup(text, "html.parser")
         continue_checks = True
 
+        self._current_artist_stack[-1] = Artist(  # update with current url
+            name, artist.spotify_id, url, artist.lastfm_url
+        )
         if u"Redirected from {}".format(name) in soup.text:  # TODO FIXME
             # may actually be fine, e.g. XXXTENTACION == XXXTentacion  FIXME
             self.log("Page redirects...", fg="red")
             continue_checks = False
 
         if continue_checks and self._wiki_is_disambiguation(artist, soup):
-            soup = self._wiki_get_disambiguated_artist_soup(artist, soup)
+            soup = self._wiki_get_disambiguated_artist_soup(soup)
             if soup is None:
                 continue_checks = False
 
         if continue_checks and self._wiki_is_artist_page(soup):
             return soup
 
+        # Failed all wiki tries
+        self._current_artist_stack[-1] = artist  # reset
         self.log(
             u"The URL scanned probably isn't a musician page... URL was {}"
             u"".format(url),
             fg='red'
         )
 
-    def _lastfm_get_bio(self, artist):
+    def _lastfm_get_bio(self):
         """Lookup the artist on Last.fm and get bio from there."""
         if not self._lastfm_api_key:
             return None
 
+        artist = self._current_artist_stack[-1]
         url = u"http://ws.audioscrobbler.com/2.0/"
         query = {
             'method': 'artist.getinfo',
@@ -270,6 +276,12 @@ class Genderifier(object):
             self.log(result_json['message'], fg='red')
             return None
         else:
+            self._current_artist_stack[-1] = Artist(
+                artist.name,
+                artist.spotify_id,
+                artist.wiki_url,
+                result_json['artist']['url']
+            )
             return result_json['artist']['bio']['content']
 
     def _wiki_is_group(self, soup):
@@ -408,6 +420,10 @@ class Genderifier(object):
                 ] if part]),
             fg="green"
         )
+        if artist.wiki_url:
+            self.log(artist.wiki_url)
+        if artist.lastfm_url:
+            self.log(artist.lastfm_url)
 
     def set_artist_batch_from_spotify(self, offset=None):  # nocov
         """Get a batch of artists from Spotify API - set as to process."""
@@ -483,19 +499,28 @@ class Genderifier(object):
         self.log(u'Trying to get gender(s) for {}...'.format(name))
 
         self._current_artist_stack.append(artist)
-        artist_soup = self._wiki_get_artist_soup(artist)
+        artist_soup = self._wiki_get_artist_soup()
         if artist_soup:
             if self._wiki_is_group(artist_soup):
                 lead, members = self._wiki_get_group_genders(artist_soup)
-                self.store(artist, is_group=True, lead=lead, members=members)
+                self.store(
+                    self._current_artist_stack[-1],
+                    is_group=True, lead=lead, members=members
+                )
             else:
                 corpus = self._wiki_get_bio(artist_soup)
                 gender, context = self._get_gender_and_context(corpus)
-                self.store(artist, gender=gender, context=context)
+                self.store(
+                    self._current_artist_stack[-1],
+                    gender=gender, context=context
+                )
         else:
-            lastfm_bio = self._lastfm_get_bio(artist)
+            lastfm_bio = self._lastfm_get_bio()
             if lastfm_bio:
                 gender, context = self._get_gender_and_context(lastfm_bio)
-                self.store(artist, gender=gender, context=context)
+                self.store(
+                    self._current_artist_stack[-1],
+                    gender=gender, context=context
+                )
         self._current_artist_stack.pop()
         return gender
