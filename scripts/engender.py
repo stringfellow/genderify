@@ -45,12 +45,19 @@ def genderify(spotify_token, lastfm_key, name, offset, batch_limit,
             )
             return
 
-        while forever:
-            genderifier.set_artist_batch_from_spotify(offset)
-            genderifier.genderise_batch()
-        else:
-            genderifier.set_artist_batch_from_spotify(offset)
-            genderifier.genderise_batch()
+        try:
+            while forever:
+                genderifier.set_artist_batch_from_spotify(offset)
+                genderifier.genderise_batch()
+            else:
+                genderifier.set_artist_batch_from_spotify(offset)
+                genderifier.genderise_batch()
+        except RuntimeError as rte:
+            click.secho(str(rte), fg="red")
+        except KeyboardInterrupt:
+            click.secho("You quit!", fg="blue")
+        except SystemExit:
+            click.secho("System exit.", fg="yellow")
 
 
 if __name__ == '__main__':

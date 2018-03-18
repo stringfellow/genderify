@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from collections import namedtuple
+from collections import namedtuple, Counter
 import re
 import sqlite3
 
@@ -19,6 +19,10 @@ PRONOUN_MAP = {
 }
 
 
+DBRow = namedtuple(
+    'DBRow',
+    ['artist', 'context', 'gender', 'is_group', 'lead', 'members']
+)
 Artist = namedtuple('Artist', ['name', 'spotify_id', 'wiki_url', 'lastfm_url'])
 MemberResults = namedtuple(
     'MemberResults',
@@ -41,7 +45,7 @@ class Genderifier(object):
         self._batch_limit = batch_limit
         self._lastfm_api_key = lastfm_api_key
         if lastfm_api_key is None:
-            click.secho("Last.fm lookups disabled, no key given.", fg="red")
+            self.log("Last.fm lookups disabled, no key given.", fg="red")
 
     def __enter__(self):
         self._conn = sqlite3.connect(self._db_file_path)
@@ -49,6 +53,11 @@ class Genderifier(object):
 
     def __exit__(self, *args):
         self._conn.close()
+
+    def log(self, msg, fg=None):
+        """Log but with indent."""
+        msg = " " * len(self._current_artist_stack) + msg
+        click.secho(msg, fg=fg)
 
     def _get_db(self):
         """Just setup the database and return a cursor."""
@@ -109,6 +118,19 @@ class Genderifier(object):
             lastfm_url=None
         )
 
+    def _delete_artist(self, name):
+        """Delete the artist."""
+        curs = self._get_db()
+        try:
+            curs.execute(
+                "DELETE FROM artists WHERE name = ?",
+                (name,)
+            )
+            self._conn.commit()
+            return True
+        except sqlite3.ProgrammingError as err:
+            self.log(err, fg='red')
+
     def _store_artist(self, row):
         """Store the results."""
         curs = self._get_db()
@@ -137,7 +159,7 @@ class Genderifier(object):
             self._conn.commit()
             return True
         except sqlite3.ProgrammingError as err:
-            click.secho(err, fg='red')
+            self.log(err, fg='red')
 
     def _set_offset(self, offset):
         """Set the offset."""
@@ -160,8 +182,8 @@ class Genderifier(object):
         )
         row = curs.fetchone()
         if row:
-            # item 0 is the ID
-            result = (
+            # item 0 is the ID, discard
+            result = DBRow(
                 Artist(*row[1:5]),
                 row[5], row[6], row[7], row[8],
                 MemberResults(*row[9:])
@@ -182,9 +204,15 @@ class Genderifier(object):
 
         return is_artist
 
-    def _wiki_is_disambiguation(self, soup):
+    def _wiki_is_disambiguation(self, artist, soup):
         """Return True if this a disambiguation page."""
-        return False  # TODO FIXME
+        if u"{} may refer to:".format(artist.name) in soup.text:
+            return True
+        return False
+
+    def _wiki_get_disambiguated_artist_soup(self, artist, soup):
+        """Get the actual soup from the disambiguation page."""
+        return None  # TODO FIXME
 
     def _wiki_get_artist_soup(self, artist):
         """Try to get the artist page, few options to check...
@@ -194,16 +222,26 @@ class Genderifier(object):
         url = artist.wiki_url or u"https://en.wikipedia.org/wiki/{}".format(
             name.replace(' ', '_')
         )
-        click.echo("Trying Wikipedia URL {}...".format(url))
+        self.log(u"Trying Wikipedia URL {}...".format(url))
         req = requests.get(url)
         text = req.text
         soup = BeautifulSoup(text, "html.parser")
-        if self._wiki_is_disambiguation(soup):
-            soup = self._wiki_get_disambiguated_artist_soup(soup)
+        continue_checks = True
 
-        if self._wiki_is_artist_page(soup):
+        if u"Redirected from {}".format(name) in soup.text:  # TODO FIXME
+            # may actually be fine, e.g. XXXTENTACION == XXXTentacion  FIXME
+            self.log("Page redirects...", fg="red")
+            continue_checks = False
+
+        if continue_checks and self._wiki_is_disambiguation(artist, soup):
+            soup = self._wiki_get_disambiguated_artist_soup(artist, soup)
+            if soup is None:
+                continue_checks = False
+
+        if continue_checks and self._wiki_is_artist_page(soup):
             return soup
-        click.secho(
+
+        self.log(
             "The URL scanned probably isn't a musician page... URL was {}"
             "".format(url),
             fg='red'
@@ -221,11 +259,11 @@ class Genderifier(object):
             'api_key': self._lastfm_api_key,
             'format': 'json'
         }
-        click.secho("Trying Last.FM...")
+        self.log("Trying Last.FM...")
         req = requests.get(url, params=query)
         result_json = req.json()
         if result_json.get('error'):
-            click.secho(result_json['message'], fg='red')
+            self.log(result_json['message'], fg='red')
             return None
         else:
             return result_json['artist']['bio']['content']
@@ -240,35 +278,46 @@ class Genderifier(object):
         return members_ix
 
     def _wiki_get_group_members(self, soup):
-        """Get the group members."""
+        """Get the group members - return list of Artists."""
         results = []
-        info_rows_texts = [th.text for th in self._wiki_get_info(soup)]
+        info_rows = self._wiki_get_info(soup)
+        info_rows_texts = [th.text for th in info_rows]
         members_ix = info_rows_texts.index('Members')
-        return results  # TODO FIXME
+        for member in info_rows[members_ix].parent.find('td').find_all('li'):
+            name = member.text
+            link = member.find('a')
+            if link:
+                url = u"https://en.wikipedia.org{}".format(link['href'])
+            else:
+                url = None
+            results.append(Artist(
+                name=name, spotify_id=None, wiki_url=url, lastfm_url=None
+            ))
+        return results
 
     def _wiki_get_group_genders(self, artist_soup):
         """Get the genders of all the group members."""
         if len(self._current_artist_stack) > 1:
-            click.secho("Bailing - too many groups deep.", fg="red")
-            self._current_artist_stack.pop()
+            self.log("Bailing - too many groups deep.", fg="red")
             return None, []
 
         lead = None
-        members = MemberResults(0, 0, 0, 0, [])
+        names = []
+        genders = []
         for ix, artist in enumerate(self._wiki_get_group_members(artist_soup)):
             gender = self.genderise(artist)
-            members.names.append(artist.name)
-            if gender:
-                if gender == 'nonbinary':
-                    members.nonbinary += 1
-                if gender == 'female':
-                    members.female += 1
-                if gender == 'male':
-                    members.male += 1
-            else:
-                members.unknown += 1
+            names.append(artist.name)
+            genders.append(gender)
             if ix == 1:
                 lead = gender
+        gender_counts = Counter(genders)
+        members = MemberResults(
+            gender_counts['nonbinary'],
+            gender_counts['female'],
+            gender_counts['male'],
+            gender_counts[None],
+            ", ".join(names)
+        )
         return lead, members
 
     def _wiki_get_bio(self, soup):
@@ -298,7 +347,7 @@ class Genderifier(object):
     def store(self, artist, gender=None, context=None, is_group=False,
               lead=None, members=None):
         """Store the result in the database, and tell us about it!"""
-        members = members or MemberResults(0, 0, 0, 0, [])
+        members = members or MemberResults(0, 0, 0, 0, "")
         row = (
             artist.name,
             artist.spotify_id,
@@ -312,7 +361,7 @@ class Genderifier(object):
             members.female,
             members.male,
             members.unknown,
-            ", ".join(members.names)
+            members.names
         )
         self.show_log_line(
             artist,
@@ -342,9 +391,13 @@ class Genderifier(object):
             a_type = "person"
             split = ""
             member_names = ""
-            context = u"(from \"{}\")".format(context)
+            if gender:
+                context = u"(from \"{}\")".format(context)
+            else:
+                gender = "gender-unknown"
+                context = ""
 
-        click.secho(
+        self.log(
             u"{} is a ".format(artist.name) +
             u" ".join([part for part in [
                     gender, led, a_type, split, member_names, context
@@ -358,7 +411,7 @@ class Genderifier(object):
         if offset is None:
             offset = self._get_offset()
 
-        click.secho("Starting at offset = {}".format(offset), fg='blue')
+        self.log("Starting at offset = {}".format(offset), fg='blue')
         url = "https://api.spotify.com/v1/search"
         query = {
             'q': 'year:0000-9999',
@@ -385,7 +438,11 @@ class Genderifier(object):
                     )
                 )
         except KeyError:
-            click.secho("Response was weird: {}".format(resp), fg='red')
+            try:
+                error = resp['error']['message']
+                raise RuntimeError(error)
+            except KeyError:
+                raise RuntimeError("Response was weird: {}".format(resp))
 
     def genderise_batch(self):
         """Just start genderising the batch."""
@@ -401,18 +458,25 @@ class Genderifier(object):
 
     def genderise(self, artist):
         """Get the gender of the artist name."""
-        click.secho('--------------------------------')
+        self.log('--------------------------------')
         name = artist.name
         result = self._checked_result(name)
         if result:
-            click.secho("Found in database.")
-            self.show_log_line(*result)
-            return
+            if result.gender is None and not result.is_group:
+                self.log(
+                    u"Found {} in database, but unknown gender...".format(name)
+                )
+                if not self._delete_artist(name):
+                    return
+            else:
+                self.log(u"Found {} in database.".format(name))
+                self.show_log_line(*result)
+                return
 
         gender = None
         lead = None
         members = []
-        click.secho('Trying to get gender(s) for {}...'.format(name))
+        self.log(u'Trying to get gender(s) for {}...'.format(name))
 
         self._current_artist_stack.append(artist)
         artist_soup = self._wiki_get_artist_soup(artist)
