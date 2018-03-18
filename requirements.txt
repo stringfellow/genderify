@@ -1,3 +1,12 @@
 beautifulsoup4==4.6.0
 click==6.7
 requests==2.18.4
+beautifulsoup4==4.6.0
+ipdb==0.10.2
+ipython==5.5.0
+mccabe==0.6.1
+pylama==7.4.3
+pylama-pylint==3.0.1
+pytest==3.4.2
+requests==2.18.4
+requests-mock==1.4.0
