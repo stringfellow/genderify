@@ -595,8 +595,7 @@ class Genderifier(object):
 
         if url is not None:
             # e.g.
-            # https://open.spotify.com/user/stringfellow/...
-            # ...playlist/1wnwAszHuuGIxVuMRMA6Q1?si=JUV0Mr9YTDKwripeKpy9IA
+            # https://open.spotify.com/user/stringfellow/playlist/2UcZJ3R9bSjSZ5czRAYKhJ?si=e_t9S7vPQiGSdjo3VXSzFA  noqa
             parts = url.split('/')
             user_id = parts[parts.index('user') + 1]
             playlist_id = parts[parts.index('playlist') + 1]
