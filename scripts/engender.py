@@ -33,8 +33,11 @@ from genderify.gender_finder import Genderifier
     '--force-fetch/--skip-found', help="Always re-try if already in database",
     default=False,
 )
+@click.option(
+    '--playlist-url', help="A Spotify public playlist URL to scan."
+)
 def genderify(spotify_token, lastfm_key, name, offset, batch_limit,
-              db_file_path, forever, force_fetch):
+              db_file_path, forever, force_fetch, playlist_url):
     """Get all the artist names."""
 
     with Genderifier(
@@ -50,12 +53,20 @@ def genderify(spotify_token, lastfm_key, name, offset, batch_limit,
             )
             return
 
+        if playlist_url:
+            genderifier.set_artists_batch_from_spotify_public_playlist(
+                url=playlist_url
+            )
+            genderifier.genderise_batch()
+            report = genderifier.get_report()
+            return report
+
         try:
             while forever:
-                genderifier.set_artist_batch_from_spotify(offset)
+                genderifier.set_artist_batch_from_spotify_search(offset)
                 genderifier.genderise_batch()
             else:
-                genderifier.set_artist_batch_from_spotify(offset)
+                genderifier.set_artist_batch_from_spotify_search(offset)
                 genderifier.genderise_batch()
         except RuntimeError as rte:
             click.secho(str(rte), fg="red")
