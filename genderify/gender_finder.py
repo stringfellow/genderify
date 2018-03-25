@@ -52,8 +52,6 @@ class Genderifier(object):
             'male': 0,
             'unknown': 0,
         }
-        if lastfm_api_key is None:
-            self.log("Last.fm lookups disabled, no key given.", fg="red")
 
     def __enter__(self):
         self._conn = sqlite3.connect(self._db_file_path)
@@ -198,6 +196,16 @@ class Genderifier(object):
             )
             return result
 
+    def _get_headers(self, extra_headers=None):
+        """Get UA headers, and add any extras."""
+        extra_headers = extra_headers or {}
+        headers = {
+            'User-Agent':
+            'Genderify 0.1 - http://github.com/stringfellow/genderify',
+        }
+        headers.update(extra_headers)
+        return headers
+
     def _wiki_get_info(self, soup):
         """Get the 'infobox' rows from the RHS of wiki page."""
         info_rows = soup.select('table.infobox tr th[scope="row"]')
@@ -326,76 +334,16 @@ class Genderifier(object):
             fg='red'
         )
 
-    def _lastfm_is_group(self, bio):
-        """Try and see if this is a group.. hard..."""
-        artist = self._current_artist_stack[-1]
-        # some dodgy shortcuts...
-        if ' orchestra' in artist.name.lower():
-            self.log("This is a group - name contains ' Orchestra'")
-            return True
-        if ' band' in artist.name.lower():
-            self.log("This is a group - name contains ' Band'")
-            return True
-
-        bio_words = bio.lower().split()
-        first_pronoun_index = 9999999
-        pronouns = ['her', 'she', 'his', 'him', 'he']
-        for pronoun in pronouns:
-            try:
-                p_ix = bio_words.index(pronoun)
-                first_pronoun_index = min([first_pronoun_index, p_ix])
-            except ValueError:
-                continue
-
-        first_group_index = 9999999
-        group_indicators = ['group', 'band', 'orchestra']
-        for group_word in group_indicators:
-            try:
-                g_ix = bio_words.index(group_word)
-                first_group_index = min([first_group_index, g_ix])
-            except ValueError:
-                continue
-
-        if first_group_index < first_pronoun_index:
-            return True
-
-    def _lastfm_get_bio(self):
-        """Lookup the artist on Last.fm and get bio from there."""
-        if not self._lastfm_api_key:
-            return None
-
-        artist = self._current_artist_stack[-1]
-        url = u"http://ws.audioscrobbler.com/2.0/"
-        query = {
-            'method': 'artist.getinfo',
-            'artist': artist.name,
-            'api_key': self._lastfm_api_key,
-            'format': 'json'
-        }
-        self.log("Trying Last.FM...")
-        req = requests.get(url, params=query)
-        result_json = req.json()
-        if result_json.get('error'):
-            self.log(result_json['message'], fg='red')
-            return None
-        self._current_artist_stack[-1] = Artist(
-            artist.name,
-            artist.spotify_id,
-            artist.wiki_url,
-            result_json['artist']['url']
-        )
-        return result_json['artist']['bio']['content']
-
     def _wiki_is_group(self, soup):
         """Determine if this soup is an artist page..."""
         info_rows_texts = [th.text for th in self._wiki_get_info(soup)]
         try:
             members_ix = info_rows_texts.index('Members')
             self.log("This is a group - it has a members section")
+            return True
         except ValueError:
             self.log("This is not a group - no members section")
             return False
-        return members_ix
 
     def _wiki_get_group_members(self, soup):
         """Get the group members - return list of Artists."""
@@ -415,7 +363,7 @@ class Genderifier(object):
         for member in members:
             url = None
             try:
-                name = member.text
+                name = member.text.strip()
                 link = member.find('a')
                 if link:
                     url = u"https://en.wikipedia.org{}".format(link['href'])
@@ -426,34 +374,81 @@ class Genderifier(object):
             ))
         return results
 
-    def _wiki_get_group_genders(self, artist_soup):
-        """Get the genders of all the group members."""
-        if len(self._current_artist_stack) > 1:
-            self.log("Bailing - too many groups deep.", fg="red")
-            return None, []
-
-        lead = None
-        names = []
-        genders = []
-        for ix, artist in enumerate(self._wiki_get_group_members(artist_soup)):
-            gender = self.genderise(artist)
-            names.append(artist.name)
-            genders.append(gender)
-            if ix == 0:
-                lead = gender
-        gender_counts = Counter(genders)
-        members = MemberResults(
-            gender_counts['nonbinary'],
-            gender_counts['female'],
-            gender_counts['male'],
-            gender_counts[None],
-            ", ".join(names)
-        )
-        return lead, members
-
     def _wiki_get_bio(self, soup):
         """Return the interesting part of a wiki aritst page soup."""
         paras = soup.find_all('p')
+        paras_text = ' '.join([p.get_text() for p in paras])
+        return paras_text
+
+    def _lastfm_get_artist_soup(self):
+        """Try to get the artist page, few options to check..."""
+        artist = self._current_artist_stack[-1]
+        name = artist.name
+        url = artist.lastfm_url or u"https://www.last.fm/music/{}/+wiki".format(
+            name.replace(' ', '+')
+        )
+        self.log(u"Trying Last.FM URL {}...".format(url))
+        req = requests.get(url)
+        if req.status_code == 404:
+            self.log("The artist was not found.")
+            return None
+        text = req.text
+        soup = BeautifulSoup(text, "html.parser")
+
+        self._current_artist_stack[-1] = Artist(  # update with current url
+            name, artist.spotify_id, artist.wiki_url, url
+        )
+        return soup
+
+    def _lastfm_get_info(self, soup):
+        """Get the 'factbox' rows from the RHS of lastfm wiki page."""
+        info_rows = soup.select('li.factbox-item')
+        return info_rows
+
+    def _lastfm_is_group(self, soup):
+        """Determine if this soup is an artist page..."""
+        info_rows_texts = [
+            li.find('h4').text for li in self._lastfm_get_info(soup)
+        ]
+        try:
+            members_ix = info_rows_texts.index('Members')
+            self.log("This is a group - it has a members section")
+            return True
+        except ValueError:
+            self.log("This is not a group - no members section")
+            return False
+
+    def _lastfm_get_group_members(self, soup):
+        """Get the group members - return list of Artists."""
+        results = []
+        info_rows = self._lastfm_get_info(soup)
+        info_rows_texts = [
+            li.find('h4').text for li in self._lastfm_get_info(soup)
+        ]
+        members_ix = info_rows_texts.index('Members')
+        ul = info_rows[members_ix].find('ul')
+        members = ul.find_all('li')
+        if not members:
+            self.log("No group members found!", fg="red")
+        for member in members:
+            url = None
+            try:
+                link = member.find('a')
+                name = link.text.strip()
+                if link:
+                    url = u"https://www.last.fm{}/+wiki".format(link['href'])
+            except AttributeError:
+                name = member.find('span').text.strip()
+            results.append(Artist(
+                name=name, spotify_id=None, wiki_url=None, lastfm_url=url
+            ))
+        return results
+
+    def _lastfm_get_bio(self, soup):
+        """Return the interesting part of a wiki aritst page soup."""
+        paras = soup.select('div.wiki-content p')
+        if paras is None:
+            return None
         paras_text = ' '.join([p.get_text() for p in paras])
         return paras_text
 
@@ -512,7 +507,8 @@ class Genderifier(object):
     def show_log_line(self, artist, context, gender, is_group, lead, members):
         """Turn a result into a printable thing."""
         if is_group:
-            led = "{}-led".format(lead if lead else "unknown")
+            # Can't consistently tell 'leadership' so ignore.
+            # led = "{}-led".format(lead if lead else "unknown")
             a_type = "group"
             split = "({} non-binary, {} female, {} male, {} unknown)".format(
                 members.nonbinary,
@@ -523,7 +519,7 @@ class Genderifier(object):
             member_names = members.names
             gender = ""
         else:
-            led = ""
+            # led = ""
             a_type = "person"
             split = ""
             member_names = ""
@@ -536,7 +532,7 @@ class Genderifier(object):
         self.log(
             u"{} is a ".format(artist.name) +
             u" ".join([part for part in [
-                    gender, led, a_type, split, member_names, context
+                    gender, a_type, split, member_names, context
                 ] if part]),
             fg="green"
         )
@@ -550,6 +546,8 @@ class Genderifier(object):
         self._fetched_artists_to_process = []
         if offset is None:
             offset = self._get_offset()
+        else:
+            self._set_offset(offset)
 
         self.log("Starting at offset = {}".format(offset), fg='blue')
         url = "https://api.spotify.com/v1/search"
@@ -564,7 +562,9 @@ class Genderifier(object):
             'Accept': 'application/json',
             'Content-Type': 'application/json',
         }
-        req = requests.get(url, params=query, headers=headers)
+        req = requests.get(
+            url, params=query, headers=self._get_headers(headers)
+        )
         resp = req.json()
         try:
             artists_json = resp['artists']['items']
@@ -611,7 +611,7 @@ class Genderifier(object):
             'Accept': 'application/json',
             'Content-Type': 'application/json',
         }
-        req = requests.get(url, headers=headers)
+        req = requests.get(url, headers=self._get_headers(headers))
         resp = req.json()
         try:
             artist_set = set()
@@ -673,9 +673,77 @@ class Genderifier(object):
             finally:
                 self._set_offset(offset + ix + 1)
 
+    def _get_artist_soup(self, source):
+        """Defer to different source."""
+        return getattr(self, '_{}_get_artist_soup'.format(source))()
+
+    def _is_group(self, source, soup):
+        """Defer to different source."""
+        return getattr(self, '_{}_is_group'.format(source))(soup)
+
+    def _get_bio(self, source, soup):
+        """Defer to different source."""
+        return getattr(
+            self, '_{}_get_bio'.format(source)
+        )(soup)
+
+    def _genderise_from_source(self, source):
+        """Try and get a result from a source."""
+        result = None
+        artist_soup = self._get_artist_soup(source)
+        if artist_soup:
+            is_group = self._is_group(source, artist_soup)
+            if is_group:
+                lead, members = self._get_group_genders(source, artist_soup)
+                result = self.store(
+                    self._current_artist_stack[-1],
+                    is_group=True,
+                    lead=lead,
+                    members=members
+                )
+            else:
+                corpus = self._get_bio(source, artist_soup)
+                if corpus is None or not corpus.strip():
+                    return None
+                gender, context = self._get_gender_and_context(corpus)
+                result = self.store(
+                    self._current_artist_stack[-1],
+                    gender=gender,
+                    context=context
+                )
+        return result
+
+    def _get_group_genders(self, source, soup):
+        """Get the genders of all the group members."""
+        if len(self._current_artist_stack) > 1:
+            self.log("Bailing - too many groups deep.", fg="red")
+            return None, []
+
+        lead = None
+        names = []
+        genders = []
+        fn = getattr(self, '_{}_get_group_members'.format(source))
+        for ix, artist in enumerate(fn(soup)):
+            gender = self.genderise(artist)
+            names.append(artist.name)
+            genders.append(gender)
+            if ix == 0:
+                lead = gender
+        gender_counts = Counter(genders)
+        members = MemberResults(
+            gender_counts['nonbinary'],
+            gender_counts['female'],
+            gender_counts['male'],
+            gender_counts[None],
+            ", ".join(names)
+        )
+        return lead, members
+
     def genderise(self, artist):
         """Get the gender of the artist name."""
-        self.log('--------------------------------')
+        self.log(
+            '--------------- {} -----------------'.format(self._get_offset())
+        )
         name = artist.name
         result = self._checked_result(name)
         if result:
@@ -713,43 +781,81 @@ class Genderifier(object):
         self.log(u'Trying to get gender(s) for {}...'.format(name))
 
         self._current_artist_stack.append(artist)
-        artist_soup = self._wiki_get_artist_soup()
-        if artist_soup:
-            if self._wiki_is_group(artist_soup):
-                lead, members = self._wiki_get_group_genders(artist_soup)
-                result = self.store(
-                    self._current_artist_stack[-1],
-                    is_group=True,
-                    lead=lead,
-                    members=members
-                )
-            else:
-                corpus = self._wiki_get_bio(artist_soup)
-                gender, context = self._get_gender_and_context(corpus)
-                result = self.store(
-                    self._current_artist_stack[-1],
-                    gender=gender,
-                    context=context
-                )
-        else:
-            lastfm_bio = self._lastfm_get_bio()
-            if lastfm_bio:
-                if self._lastfm_is_group(lastfm_bio):
-                    result = self.store(
-                        self._current_artist_stack[-1],
-                        is_group=True
-                    )
-                else:
-                    gender, context = self._get_gender_and_context(lastfm_bio)
-                    result = self.store(
-                        self._current_artist_stack[-1],
-                        gender=gender, context=context
-                    )
-        if result:
+        sources = ['wiki', 'lastfm']
+        result = None
+        while len(sources) and result is None:
+            result = self._genderise_from_source(sources.pop())
+
+        if result is not None:
             self.add_to_report(result)
+            gender = result.gender
         else:
             self.log(
                 u"Couldn't find a gender for {}".format(artist.name), fg="red"
             )
         self._current_artist_stack.pop()
         return gender
+
+
+class GenderifierLastFMAPI(Genderifier):
+    """Dud bits from the lastfm API which doesn't give rich info."""
+
+    def _lastfm_is_group_from_api(self, bio):
+        """Try and see if this is a group.. hard..."""
+        artist = self._current_artist_stack[-1]
+        # some dodgy shortcuts...
+        if ' orchestra' in artist.name.lower():
+            self.log("This is a group - name contains ' Orchestra'")
+            return True
+        if ' band' in artist.name.lower():
+            self.log("This is a group - name contains ' Band'")
+            return True
+
+        bio_words = bio.lower().split()
+        first_pronoun_index = 9999999
+        pronouns = ['her', 'she', 'his', 'him', 'he']
+        for pronoun in pronouns:
+            try:
+                p_ix = bio_words.index(pronoun)
+                first_pronoun_index = min([first_pronoun_index, p_ix])
+            except ValueError:
+                continue
+
+        first_group_index = 9999999
+        group_indicators = ['group', 'band', 'orchestra']
+        for group_word in group_indicators:
+            try:
+                g_ix = bio_words.index(group_word)
+                first_group_index = min([first_group_index, g_ix])
+            except ValueError:
+                continue
+
+        if first_group_index < first_pronoun_index:
+            return True
+
+    def _lastfm_get_bio_via_api(self):
+        """Lookup the artist on Last.fm and get bio from there."""
+        if not self._lastfm_api_key:
+            return None
+
+        artist = self._current_artist_stack[-1]
+        url = u"http://ws.audioscrobbler.com/2.0/"
+        query = {
+            'method': 'artist.getinfo',
+            'artist': artist.name,
+            'api_key': self._lastfm_api_key,
+            'format': 'json'
+        }
+        self.log("Trying Last.FM...")
+        req = requests.get(url, params=query, headers=self._get_headers())
+        result_json = req.json()
+        if result_json.get('error'):
+            self.log(result_json['message'], fg='red')
+            return None
+        self._current_artist_stack[-1] = Artist(
+            artist.name,
+            artist.spotify_id,
+            artist.wiki_url,
+            result_json['artist']['url']
+        )
+        return result_json['artist']['bio']['content']

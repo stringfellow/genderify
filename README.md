@@ -5,7 +5,7 @@
 To discover the potential bias toward a particular gender of musical artists
 amongst a person's listening. Using Spotify as a source of artists, and of a
 person's music library, playlists etc, the biographies (found on either
-wikipedia or last.fm) of the artists are inspected to see if it is possible to
+last.fm or wikipedia) of the artists are inspected to see if it is possible to
 determine a gender - or genders in the case of a group, which for the purposes
 of this exercise are limited to:
 
@@ -27,11 +27,10 @@ There are so many, I'm sure, but here are a few very obvious ones:
   privately identify as one thing while publicly identifying another way, for
   personal reasons.
 * 'Gender' of a band or group is difficult, so we've opted to just represent
-  the split of that group, and determine the gender of the 'front person'
-  (which is the person at the top of the list in the 'Members' section on
-  Wikipedia). 
+  the split of that group. 
 * Groups or artists with the same name will probably confuse this dumb script.
-  It will only store whichever one it encounters first.
+  It will only store whichever one it encounters first, or which the Last.FM
+  bio lists first when it has multiple.
 * Because it's quite hard to get a list of "all the artists in the world"
   (is it?) we are just using Spotify's search API which gives an opaquely
   sorted list of artists back with each call - so, we probably miss a lot.
