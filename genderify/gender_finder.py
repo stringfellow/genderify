@@ -338,7 +338,7 @@ class Genderifier(object):
         """Determine if this soup is an artist page..."""
         info_rows_texts = [th.text for th in self._wiki_get_info(soup)]
         try:
-            members_ix = info_rows_texts.index('Members')
+            info_rows_texts.index('Members')
             self.log("This is a group - it has a members section")
             return True
         except ValueError:
@@ -384,8 +384,10 @@ class Genderifier(object):
         """Try to get the artist page, few options to check..."""
         artist = self._current_artist_stack[-1]
         name = artist.name
-        url = artist.lastfm_url or u"https://www.last.fm/music/{}/+wiki".format(
-            name.replace(' ', '+')
+        url = artist.lastfm_url or (
+            u"https://www.last.fm/music/{}/+wiki".format(
+                name.replace(' ', '+')
+            )
         )
         self.log(u"Trying Last.FM URL {}...".format(url))
         req = requests.get(url)
@@ -411,7 +413,7 @@ class Genderifier(object):
             li.find('h4').text for li in self._lastfm_get_info(soup)
         ]
         try:
-            members_ix = info_rows_texts.index('Members')
+            info_rows_texts.index('Members')
             self.log("This is a group - it has a members section")
             return True
         except ValueError:
@@ -648,16 +650,17 @@ class Genderifier(object):
     def get_report(self):
         """Get report on batches processed this session."""
         unique_artists = len(self._report['artists'])
+        report_str = ", ".join([
+            "{} {} {}".format(
+                self._report[gender],
+                gender,
+                "person" if self._report[gender] == 1 else "people"
+            )
+            for gender in ['nonbinary', 'female', 'male', 'unknown']
+        ])
         print(
-            "Of {} unique artists found, they are made up of {}".format(
-                unique_artists, ", ".join([
-                    "{} {} {}".format(
-                        self._report[gender],
-                        gender,
-                        "person" if self._report[gender] == 1 else "people"
-                    )
-                    for gender in ['nonbinary', 'female', 'male', 'unknown']
-                ])
+            f"Of {unique_artists} unique artists found, they are made up of "
+            "{report_str}"
             )
         )
 
@@ -776,8 +779,6 @@ class Genderifier(object):
                 return
 
         gender = None
-        lead = None
-        members = []
         self.log(u'Trying to get gender(s) for {}...'.format(name))
 
         self._current_artist_stack.append(artist)
