@@ -659,10 +659,10 @@ class Genderifier(object):
             for gender in ['nonbinary', 'female', 'male', 'unknown']
         ])
         print(
-            f"Of {unique_artists} unique artists found, they are made up of "
-            "{report_str}"
-            )
+            "Of {} unique artists found, they are made up of "
+            "{}".format(unique_artists, report_str)
         )
+        return self._report['artists']
 
     def genderise_batch(self):
         """Just start genderising the batch."""
