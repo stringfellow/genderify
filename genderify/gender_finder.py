@@ -662,7 +662,7 @@ class Genderifier(object):
             "Of {} unique artists found, they are made up of "
             "{}".format(unique_artists, report_str)
         )
-        return self._report['artists']
+        return self._report
 
     def genderise_batch(self):
         """Just start genderising the batch."""
