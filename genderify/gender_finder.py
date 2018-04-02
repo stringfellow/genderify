@@ -791,6 +791,9 @@ class Genderifier(object):
             self.add_to_report(result)
             gender = result.gender
         else:
+            self.add_to_report(
+                DBRow(artist, '', None, False, '', None)
+            )
             self.log(
                 u"Couldn't find a gender for {}".format(artist.name), fg="red"
             )
