@@ -42,6 +42,8 @@ class Genderifier(object):
         self._fetched_artists_to_process = []
         self._current_artist_stack = []
         self._spotify_token = spotify_token
+        self._playlist_name = None
+        self._playlist_description = None
         self._batch_limit = batch_limit
         self._lastfm_api_key = lastfm_api_key
         self._force_fetch = force_fetch
@@ -114,6 +116,16 @@ class Genderifier(object):
                 )
             self._did_check_db_existing = True
         return curs
+
+    @property
+    def playlist_name(self):
+        """Just return the playlist name if we got it..."""
+        return self._playlist_name
+
+    @property
+    def playlist_description(self):
+        """Just return the playlist description if we got it..."""
+        return self._playlist_description
 
     def get_artist_obj_from_name(self, name):
         """Return an Artist object with just the name set."""
@@ -616,6 +628,8 @@ class Genderifier(object):
         req = requests.get(url, headers=self._get_headers(headers))
         resp = req.json()
         try:
+            self._playlist_name = resp['name']
+            self._playlist_description = resp['description']
             artist_set = set()
             for track in resp['tracks']['items']:
                 artists = track['track']['artists']
