@@ -49,10 +49,10 @@ class Genderifier(object):
         self._force_fetch = force_fetch
         self._report = {
             'artists': set(),
-            'nonbinary': 0,
-            'female': 0,
-            'male': 0,
-            'unknown': 0,
+            'nonbinary': [],
+            'female': [],
+            'male': [],
+            'unknown': [],
         }
 
     def __enter__(self):
@@ -368,7 +368,7 @@ class Genderifier(object):
         if not members:
             members = [
                 el for el in list(cell.children)
-                if unicode(el) not in (u'<br/>', u'\n')
+                if el not in ('<br/>', '\n')
             ]
         if not members:
             self.log("No group members found!", fg="red")
@@ -380,7 +380,7 @@ class Genderifier(object):
                 if link:
                     url = u"https://en.wikipedia.org{}".format(link['href'])
             except AttributeError:
-                name = unicode(member).strip()
+                name = member.strip()
             results.append(Artist(
                 name=name, spotify_id=None, wiki_url=url, lastfm_url=None
             ))
@@ -656,19 +656,17 @@ class Genderifier(object):
         if artist in self._report['artists']:
             return
         if not is_group:
-            self._report[gender or "unknown"] += 1
-        else:
-            for _gender in ['nonbinary', 'female', 'male', 'unknown']:
-                self._report[_gender] += getattr(members, _gender)
+            self._report['artists'].add(artist)
+            self._report[gender or "unknown"].append(artist._asdict())
 
     def get_report(self):
         """Get report on batches processed this session."""
         unique_artists = len(self._report['artists'])
         report_str = ", ".join([
             "{} {} {}".format(
-                self._report[gender],
+                len(self._report[gender]),
                 gender,
-                "person" if self._report[gender] == 1 else "people"
+                "person" if len(self._report[gender]) == 1 else "people"
             )
             for gender in ['nonbinary', 'female', 'male', 'unknown']
         ])
@@ -786,11 +784,15 @@ class Genderifier(object):
                         "Couldn't delete old record... skipping.", fg="red"
                     )
                     return
+            elif result.is_group:
+                for name in result.members.names.split(', '):
+                    self.genderise(self.get_artist_obj_from_name(name))
+                return
             else:
                 self.log(u"Found {} in database.".format(name))
                 self.add_to_report(result)
                 self.show_log_line(*result)
-                return
+                return result.gender
 
         gender = None
         self.log(u'Trying to get gender(s) for {}...'.format(name))
