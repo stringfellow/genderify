@@ -484,6 +484,21 @@ class Genderifier(object):
         gender = PRONOUN_MAP.get(first_pronoun, None)
         return gender, context
 
+    def get_playlist(self, username, playlist_id):
+        """Get the playlist JSON."""
+        url = (
+            "https://api.spotify.com/v1/users/{user_id}"
+            "/playlists/{playlist_id}"
+        ).format(user_id=username, playlist_id=playlist_id)
+        headers = {
+            'Authorization': "Bearer {}".format(self._spotify_token),
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+        }
+        req = requests.get(url, headers=self._get_headers(headers))
+        resp = req.json()
+        return resp
+
     def store(self, artist, gender=None, context=None, is_group=False,
               lead=None, members=None):
         """Store the result in the database, and tell us about it!"""
@@ -616,17 +631,7 @@ class Genderifier(object):
             if '?' in playlist_id:
                 playlist_id = playlist_id.split('?')[0]
 
-        url = (
-            "https://api.spotify.com/v1/users/{user_id}"
-            "/playlists/{playlist_id}"
-        ).format(user_id=user_id, playlist_id=playlist_id)
-        headers = {
-            'Authorization': "Bearer {}".format(self._spotify_token),
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-        }
-        req = requests.get(url, headers=self._get_headers(headers))
-        resp = req.json()
+        resp = self.get_playlist(user_id, playlist_id)
         try:
             self._playlist_name = resp['name']
             self._playlist_description = resp['description']
